@@ -1,7 +1,7 @@
 {
     "name": "lora-gateway-server",
     "version": "1.0.0",
-    "description": "LoRa Gateway Server for Inverter-OLTC Communication",
+    "description": "LoRA management server with WebSocket dashboard",
     "main": "server.js",
     "scripts": {
       "start": "node server.js",
