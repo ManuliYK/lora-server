@@ -7,6 +7,8 @@ const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
+
+// WebSocket server on the same port as HTTP
 const wss = new WebSocket.Server({ server });
 
 // Middleware
@@ -14,8 +16,11 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('public')); // For serving web dashboard
 
+console.log('Starting LoRa Gateway Server...');
+
 // Database setup
 const db = new sqlite3.Database('lora_data.db');
+console.log('Database initialized');
 
 // Create tables
 db.serialize(() => {
@@ -37,48 +42,98 @@ db.serialize(() => {
         lastSeen DATETIME DEFAULT CURRENT_TIMESTAMP,
         status TEXT DEFAULT 'online'
     )`);
+    console.log('Database tables ready');
 });
 
 // Store connected WebSocket clients
-const connectedClients = new Set();
+const connectedClients = new Map();
 
 // WebSocket connection handling
-wss.on('connection', (ws) => {
-    console.log('New WebSocket connection established');
-    connectedClients.add(ws);
+wss.on('connection', (ws, req) => {
+    const clientId = Date.now() + Math.random();
+    connectedClients.set(clientId, {
+        socket: ws,
+        type: 'unknown',
+        connectedAt: new Date(),
+        lastPing: new Date()
+    });
+    
+    console.log(`New WebSocket connection: ${clientId} from ${req.socket.remoteAddress}`);
+    console.log(`Total connections: ${connectedClients.size}`);
+    
+    // Send welcome message
+    ws.send(JSON.stringify({
+        type: 'connection_established',
+        clientId: clientId,
+        timestamp: Date.now()
+    }));
     
     ws.on('message', (message) => {
         try {
             const data = JSON.parse(message);
-            console.log('Received WebSocket message:', data);
+            console.log(`Message from ${clientId}:`, data);
+            
+            // Update client info based on message type
+            const client = connectedClients.get(clientId);
+            if (client) {
+                client.lastPing = new Date();
+                if (data.type === 'gateway_connected') {
+                    client.type = 'gateway';
+                    client.gatewayId = data.gateway_id;
+                }
+            }
             
             switch(data.type) {
                 case 'gateway_connected':
-                    handleGatewayConnection(data);
+                    handleGatewayConnection(data, clientId);
                     break;
                 case 'sensor_data':
                     handleSensorData(data);
+                    break;
+                case 'heartbeat':
+                    handleHeartbeat(data, clientId);
                     break;
                 default:
                     console.log('Unknown message type:', data.type);
             }
         } catch (error) {
-            console.error('Error parsing WebSocket message:', error);
+            console.error(`Error parsing message from ${clientId}:`, error);
         }
     });
     
     ws.on('close', () => {
-        console.log('WebSocket connection closed');
-        connectedClients.delete(ws);
+        const client = connectedClients.get(clientId);
+        console.log(`WebSocket connection closed: ${clientId} (${client?.type || 'unknown'})`);
+        connectedClients.delete(clientId);
+        console.log(`Remaining connections: ${connectedClients.size}`);
     });
     
     ws.on('error', (error) => {
-        console.error('WebSocket error:', error);
-        connectedClients.delete(ws);
+        console.error(`WebSocket error for ${clientId}:`, error);
+        connectedClients.delete(clientId);
     });
+    
+    // Keep-alive ping
+    const pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.ping();
+        } else {
+            clearInterval(pingInterval);
+        }
+    }, 30000);
 });
 
 // HTTP API Routes
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'ok', 
+        timestamp: Date.now(),
+        connections: connectedClients.size,
+        uptime: process.uptime()
+    });
+});
 
 // Receive sensor data via HTTP POST
 app.post('/api/sensor-data', (req, res) => {
@@ -93,7 +148,7 @@ app.post('/api/sensor-data', (req, res) => {
         data: data
     });
     
-    res.json({ status: 'success', message: 'Data received' });
+    res.json({ status: 'success', message: 'Data received', timestamp: Date.now() });
 });
 
 // Get latest sensor data
@@ -102,6 +157,7 @@ app.get('/api/sensor-data/latest', (req, res) => {
     
     db.all(`SELECT * FROM sensor_data ORDER BY received_at DESC LIMIT ?`, [limit], (err, rows) => {
         if (err) {
+            console.error('Database error:', err);
             res.status(500).json({ error: err.message });
             return;
         }
@@ -117,6 +173,7 @@ app.get('/api/sensor-data/node/:nodeId', (req, res) => {
     db.all(`SELECT * FROM sensor_data WHERE nodeId = ? ORDER BY received_at DESC LIMIT ?`, 
            [nodeId, limit], (err, rows) => {
         if (err) {
+            console.error('Database error:', err);
             res.status(500).json({ error: err.message });
             return;
         }
@@ -139,6 +196,7 @@ app.get('/api/sensor-data/voltage/:nodeId', (req, res) => {
     
     db.all(query, [nodeId], (err, rows) => {
         if (err) {
+            console.error('Database error:', err);
             res.status(500).json({ error: err.message });
             return;
         }
@@ -150,6 +208,8 @@ app.get('/api/sensor-data/voltage/:nodeId', (req, res) => {
 app.post('/api/send-command', (req, res) => {
     const { nodeId, message } = req.body;
     
+    console.log(`API request to send command: nodeId=${nodeId}, message="${message}"`);
+    
     if (!nodeId || !message) {
         res.status(400).json({ error: 'nodeId and message are required' });
         return;
@@ -159,23 +219,63 @@ app.post('/api/send-command', (req, res) => {
     const command = {
         type: 'send_to_node',
         nodeId: parseInt(nodeId),
-        message: message
+        message: message,
+        timestamp: Date.now()
     };
     
-    broadcastToClients(command);
+    const sent = broadcastToGateways(command);
     
-    res.json({ status: 'success', message: 'Command sent to gateway' });
+    if (sent > 0) {
+        console.log(`Command sent to ${sent} gateway(s)`);
+        res.json({ 
+            status: 'success', 
+            message: 'Command sent to gateway', 
+            gateways_notified: sent 
+        });
+    } else {
+        console.log('No gateways connected to send command');
+        res.status(503).json({ 
+            error: 'No gateways connected',
+            message: 'Command could not be delivered'
+        });
+    }
 });
 
 // Get gateway status
 app.get('/api/gateways', (req, res) => {
     db.all(`SELECT * FROM gateways ORDER BY lastSeen DESC`, (err, rows) => {
         if (err) {
+            console.error('Database error:', err);
             res.status(500).json({ error: err.message });
             return;
         }
-        res.json(rows);
+        
+        // Add real-time connection status
+        const gatewaysWithStatus = rows.map(gateway => {
+            const isConnected = Array.from(connectedClients.values())
+                .some(client => client.gatewayId === gateway.gatewayId);
+            
+            return {
+                ...gateway,
+                realtime_status: isConnected ? 'connected' : 'disconnected'
+            };
+        });
+        
+        res.json(gatewaysWithStatus);
     });
+});
+
+// Get connected clients info
+app.get('/api/connections', (req, res) => {
+    const connections = Array.from(connectedClients.entries()).map(([id, client]) => ({
+        id: id,
+        type: client.type,
+        gatewayId: client.gatewayId || null,
+        connectedAt: client.connectedAt,
+        lastPing: client.lastPing
+    }));
+    
+    res.json(connections);
 });
 
 // Serve web dashboard
@@ -184,12 +284,34 @@ app.get('/', (req, res) => {
 });
 
 // Helper functions
-function handleGatewayConnection(data) {
-    console.log('Gateway connected:', data.gateway_id);
+function handleGatewayConnection(data, clientId) {
+    console.log(`Gateway connected: ${data.gateway_id} (client: ${clientId})`);
     
     // Update gateway status in database
     db.run(`INSERT OR REPLACE INTO gateways (gatewayId, lastSeen, status) 
-            VALUES (?, datetime('now'), 'online')`, [data.gateway_id]);
+            VALUES (?, datetime('now'), 'online')`, [data.gateway_id], (err) => {
+        if (err) {
+            console.error('Database error updating gateway:', err);
+        }
+    });
+    
+    // Send acknowledgment
+    const client = connectedClients.get(clientId);
+    if (client && client.socket.readyState === WebSocket.OPEN) {
+        client.socket.send(JSON.stringify({
+            type: 'gateway_ack',
+            message: 'Gateway connection registered',
+            timestamp: Date.now()
+        }));
+    }
+}
+
+function handleHeartbeat(data, clientId) {
+    console.log(`Heartbeat from gateway: ${data.gateway_id}`);
+    
+    // Update last seen time
+    db.run(`UPDATE gateways SET lastSeen = datetime('now') WHERE gatewayId = ?`, 
+           [data.gateway_id]);
 }
 
 function handleSensorData(data) {
@@ -216,35 +338,96 @@ function saveSensorData(data) {
         data.rssi,
         data.snr,
         data.gatewayId
-    ]);
+    ], function(err) {
+        if (err) {
+            console.error('Database error saving sensor data:', err);
+        } else {
+            console.log(`Sensor data saved with ID: ${this.lastID}`);
+        }
+    });
     
     stmt.finalize();
 }
 
 function broadcastToClients(message) {
     const messageStr = JSON.stringify(message);
+    let sent = 0;
     
-    connectedClients.forEach(client => {
-        if (client.readyState === WebSocket.OPEN) {
-            client.send(messageStr);
+    connectedClients.forEach((client, id) => {
+        if (client.socket.readyState === WebSocket.OPEN) {
+            client.socket.send(messageStr);
+            sent++;
         }
     });
+    
+    console.log(`Broadcast message sent to ${sent} clients`);
+    return sent;
+}
+
+function broadcastToGateways(message) {
+    const messageStr = JSON.stringify(message);
+    let sent = 0;
+    
+    connectedClients.forEach((client, id) => {
+        if (client.type === 'gateway' && client.socket.readyState === WebSocket.OPEN) {
+            client.socket.send(messageStr);
+            sent++;
+            console.log(`Command sent to gateway: ${client.gatewayId}`);
+        }
+    });
+    
+    return sent;
 }
 
 // Start server
 const PORT = process.env.PORT || 3000;
-const WS_PORT = 3001;
 
-server.listen(PORT, () => {
-    console.log(`HTTP Server running on port ${PORT}`);
-    console.log(`WebSocket Server running on port ${WS_PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on port ${PORT}`);
+    console.log(`HTTP API available at http://localhost:${PORT}`);
+    console.log(`WebSocket server running on the same port`);
     console.log(`Dashboard available at http://localhost:${PORT}`);
+    console.log('Waiting for gateway connections...');
 });
+
+// Periodic cleanup of stale connections
+setInterval(() => {
+    const now = new Date();
+    let cleaned = 0;
+    
+    connectedClients.forEach((client, id) => {
+        // Remove connections that haven't pinged in 2 minutes
+        if (client.socket.readyState !== WebSocket.OPEN || 
+            (now - client.lastPing) > 120000) {
+            connectedClients.delete(id);
+            cleaned++;
+        }
+    });
+    
+    if (cleaned > 0) {
+        console.log(`Cleaned up ${cleaned} stale connections`);
+    }
+}, 60000); // Run every minute
 
 // Graceful shutdown
 process.on('SIGINT', () => {
     console.log('Shutting down server...');
-    db.close();
-    server.close();
-    process.exit(0);
+    
+    // Close all WebSocket connections
+    connectedClients.forEach((client) => {
+        client.socket.close();
+    });
+    
+    db.close((err) => {
+        if (err) {
+            console.error('Error closing database:', err);
+        } else {
+            console.log('Database closed');
+        }
+    });
+    
+    server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+    });
 });
