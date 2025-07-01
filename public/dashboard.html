@@ -202,9 +202,14 @@
                 <div class="status-value" id="gateway-status">Offline</div>
             </div>
             <div class="status-card">
-                <h3>Active Nodes</h3>
-                <div class="status-value" id="active-nodes">0</div>
+                <h3>Active End Devices</h3>
+                <div class="status-value" id="active-end-nodes">0</div>
             </div>
+            <div class="status-card">
+                <h3>Active Gateways</h3>
+                <div class="status-value" id="active-gateways">0</div>
+            </div>
+
             <div class="status-card">
                 <h3>Messages Today</h3>
                 <div class="status-value" id="messages-today">0</div>
@@ -286,12 +291,14 @@
             initWebSocket();
             initCharts();
             loadInitialData();
+            updateActiveEndNodes();     
+            updateActiveGateways();
         });
         
         function initWebSocket() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             ws = new WebSocket(`${protocol}//${window.location.host}`);
-            
+    
             ws.onopen = function() {
                 addLog('WebSocket connected to server');
                 updateGatewayStatus('Online');
@@ -338,7 +345,7 @@
             // Add to charts
             const timestamp = new Date(data.timestamp || Date.now());
             
-            if (data.messageType === 'voltage_reading' && data.voltage > 0) {
+            if (data.messageType === 'voltage_reading') {
                 voltageData.push({
                     x: timestamp,
                     y: data.voltage
@@ -381,6 +388,7 @@
             
             // Add log entry
             addLog(`Data from Node 0x${data.nodeId.toString(16).toUpperCase()}: ${data.messageType} - ${data.voltage}V`);
+
         }
         
         function initCharts() {
@@ -587,17 +595,31 @@
                 logContainer.removeChild(logContainer.lastChild);
             }
         }
-        
-        // Update active nodes count periodically
-        setInterval(() => {
+        function updateActiveEndNodes() {
+            fetch('/api/active-nodes')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('active-end-nodes').textContent = data.activeNodeCount;
+                })
+                .catch(error => console.error('Error fetching active end nodes:', error));
+}
+
+        function updateActiveGateways() {
             fetch('/api/gateways')
                 .then(response => response.json())
                 .then(data => {
                     const activeGateways = data.filter(g => g.status === 'online').length;
-                    document.getElementById('active-nodes').textContent = activeGateways;
+                    document.getElementById('active-gateways').textContent = activeGateways;
                 })
                 .catch(error => console.error('Error fetching gateway status:', error));
-        }, 30000); // Update every 30 seconds
+        }
+
+        // Update active nodes count periodically
+       setInterval(() => {
+        updateActiveEndNodes();
+        updateActiveGateways();
+    }, 30000);
+
     </script>
 </body>
 </html>

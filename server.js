@@ -265,6 +265,25 @@ app.get('/api/gateways', (req, res) => {
     });
 });
 
+// Route to return number of active end nodes
+app.get('/api/active-nodes', (req, res) => {
+    const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+
+    db.all(`
+        SELECT DISTINCT nodeId 
+        FROM sensor_data 
+        WHERE timestamp > ?
+    `, [fiveMinutesAgo], (err, rows) => {
+        if (err) {
+            console.error('DB Error:', err);
+            res.status(500).json({ error: 'Internal server error' });
+        } else {
+            res.json({ activeNodeCount: rows.length });
+        }
+    });
+});
+
+
 // Get connected clients info
 app.get('/api/connections', (req, res) => {
     const connections = Array.from(connectedClients.entries()).map(([id, client]) => ({
