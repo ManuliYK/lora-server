@@ -5,11 +5,16 @@ const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
 const path = require('path');
 
+// Track active nodes by their nodeId and last seen timestamp
+const activeNodes = new Map();
+const ACTIVE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+
 const app = express();
 const server = http.createServer(app);
 
 // WebSocket server on the same port as HTTP
 const wss = new WebSocket.Server({ server });
+
 
 // Middleware
 app.use(cors());
@@ -140,13 +145,10 @@ app.post('/api/sensor-data', (req, res) => {
     console.log('Received sensor data via HTTP:', req.body);
     
     const data = req.body;
-    saveSensorData(data);
+    // Remove this line: saveSensorData(data);
     
-    // Broadcast to all connected WebSocket clients (web dashboard)
-    broadcastToClients({
-        type: 'new_sensor_data',
-        data: data
-    });
+    // Only process through handleSensorData
+    handleSensorData(data);
     
     res.json({ status: 'success', message: 'Data received', timestamp: Date.now() });
 });
@@ -267,20 +269,12 @@ app.get('/api/gateways', (req, res) => {
 
 // Route to return number of active end nodes
 app.get('/api/active-nodes', (req, res) => {
-    const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-
-    db.all(`
-        SELECT DISTINCT nodeId 
-        FROM sensor_data 
-        WHERE timestamp > ?
-    `, [fiveMinutesAgo], (err, rows) => {
-        if (err) {
-            console.error('DB Error:', err);
-            res.status(500).json({ error: 'Internal server error' });
-        } else {
-            res.json({ activeNodeCount: rows.length });
-        }
+    const now = Date.now();
+    const active = Array.from(activeNodes.entries()).filter(([_, lastSeen]) => {
+        return now - lastSeen <= ACTIVE_TIMEOUT;
     });
+
+    res.json({ activeNodeCount: active.length });
 });
 
 
@@ -335,9 +329,26 @@ function handleHeartbeat(data, clientId) {
 
 function handleSensorData(data) {
     console.log('Processing sensor data:', data);
+    
+    // Add this check to prevent duplicate processing
+    if (data.processed) {
+        return; // Skip if already processed
+    }
+    data.processed = true;
+    
+    // Fix timestamp issue
+    if (!data.timestamp || data.timestamp < 1000000000) {
+        data.timestamp = Math.floor(Date.now() / 1000);
+    }
+    
+    const endDeviceIds = [187, 204];
+    
+    if (endDeviceIds.includes(data.nodeId)) {
+        activeNodes.set(data.nodeId, Date.now());
+    }
+    
     saveSensorData(data);
     
-    // Broadcast to web clients
     broadcastToClients({
         type: 'new_sensor_data',
         data: data
@@ -425,6 +436,23 @@ setInterval(() => {
     
     if (cleaned > 0) {
         console.log(`Cleaned up ${cleaned} stale connections`);
+    }
+}, 60000); // Run every minute
+
+// Add this new cleanup function after the existing cleanup interval
+setInterval(() => {
+    const now = Date.now();
+    const cleaned = [];
+    
+    activeNodes.forEach((lastSeen, nodeId) => {
+        if (now - lastSeen > ACTIVE_TIMEOUT) {
+            activeNodes.delete(nodeId);
+            cleaned.push(nodeId);
+        }
+    });
+    
+    if (cleaned.length > 0) {
+        console.log(`Cleaned up inactive nodes: ${cleaned.join(', ')}`);
     }
 }, 60000); // Run every minute
 

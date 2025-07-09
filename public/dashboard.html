@@ -14,7 +14,7 @@
         
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #010827 0%, #764ba2 100%);
             color: #333;
             min-height: 100vh;
         }
@@ -56,7 +56,7 @@
         }
         
         .status-card h3 {
-            color: #667eea;
+            color: #010827;
             margin-bottom: 10px;
         }
         
@@ -91,11 +91,16 @@
         }
         
         .card h2 {
-            color: #667eea;
+            color: #010827;
             margin-bottom: 20px;
             text-align: center;
         }
         
+        .card canvas {
+            height: 300px !important;
+            max-height: 300px;
+        }
+
         .data-table {
             width: 100%;
             border-collapse: collapse;
@@ -110,7 +115,7 @@
         }
         
         .data-table th {
-            background-color: #667eea;
+            background-color: #010827;
             color: white;
         }
         
@@ -149,7 +154,7 @@
         }
         
         .btn {
-            background: linear-gradient(45deg, #667eea, #764ba2);
+            background: linear-gradient(45deg, #010827, #764ba2);
             color: white;
             border: none;
             padding: 12px 25px;
@@ -168,7 +173,7 @@
             margin: 5px 0;
             border-radius: 5px;
             background-color: #f8f9fa;
-            border-left: 4px solid #667eea;
+            border-left: 4px solid #010827;
             font-family: monospace;
             font-size: 14px;
         }
@@ -189,10 +194,13 @@
         }
     </style>
 </head>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chartjs-adapter-date-fns.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/date-fns/2.29.3/index.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-adapter-date-fns/2.0.0/chartjs-adapter-date-fns.bundle.min.js"></script>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🌐 LoRa Network Dashboard</h1>
+            <h1> LoRa Network Dashboard</h1>
             <p>Inverter & OLTC Transformer Communication System</p>
         </div>
         
@@ -222,39 +230,40 @@
         
         <div class="dashboard-grid">
             <div class="card">
-                <h2>📊 Voltage Readings</h2>
-                <canvas id="voltageChart" width="400" height="200"></canvas>
+                <h2> Voltage Readings</h2>
+                <canvas id="voltageChart" width="350" height="200"></canvas>
             </div>
             
             <div class="card">
-                <h2>📡 Signal Quality</h2>
-                <canvas id="signalChart" width="400" height="200"></canvas>
+                <h2> Signal Quality</h2>
+                <canvas id="signalChart" width="350" height="200"></canvas>
             </div>
         </div>
         
         <div class="card">
-            <h2>📋 Latest Sensor Data</h2>
+            <h2> Latest Sensor Data</h2>
             <table class="data-table" id="data-table">
                 <thead>
                     <tr>
                         <th>Time</th>
                         <th>Node ID</th>
                         <th>Voltage (V)</th>
-                        <th>Message Type</th>
                         <th>RSSI (dBm)</th>
                         <th>SNR (dB)</th>
                     </tr>
                 </thead>
                 <tbody id="data-tbody">
                     <tr>
-                        <td colspan="6" style="text-align: center;">No data available</td>
+                        <td colspan="5" style="text-align: center; color: #666; font-style: italic;">
+                            No LoRa end devices connected
+                        </td>
                     </tr>
                 </tbody>
             </table>
         </div>
         
         <div class="control-panel">
-            <h2>🎛️ Control Panel</h2>
+            <h2> Control Panel</h2>
             <div class="control-group">
                 <label for="node-select">Target Node:</label>
                 <select id="node-select">
@@ -270,7 +279,7 @@
         </div>
         
         <div class="card">
-            <h2>📝 System Log</h2>
+            <h2> System Log</h2>
             <div id="log-container" style="max-height: 300px; overflow-y: auto;">
                 <div class="log-entry">System initialized - waiting for data...</div>
             </div>
@@ -288,8 +297,8 @@
         
         // Initialize dashboard
         document.addEventListener('DOMContentLoaded', function() {
-            initWebSocket();
             initCharts();
+            initWebSocket();
             loadInitialData();
             updateActiveEndNodes();     
             updateActiveGateways();
@@ -304,14 +313,18 @@
                 updateGatewayStatus('Online');
             };
             
-            ws.onmessage = function(event) {
-                try {
-                    const data = JSON.parse(event.data);
-                    handleWebSocketMessage(data);
-                } catch (error) {
-                    console.error('Error parsing WebSocket message:', error);
-                }
-            };
+           ws.onmessage = function(event) {
+            console.log('Raw WebSocket message received:', event.data); // 🔍 Add this
+
+            try {
+                const data = JSON.parse(event.data);
+                addLog('Received WebSocket data: ' + JSON.stringify(data));
+                 handleWebSocketMessage(data);
+          } catch (error) {
+                console.error('Error parsing WebSocket message:', error);
+                addLog('WebSocket JSON error: ' + error.message);
+    }
+};
             
             ws.onclose = function() {
                 addLog('WebSocket connection closed');
@@ -330,6 +343,7 @@
         function handleWebSocketMessage(data) {
             switch(data.type) {
                 case 'new_sensor_data':
+                    
                     updateSensorData(data.data);
                     break;
                 case 'gateway_connected':
@@ -342,154 +356,170 @@
         }
         
         function updateSensorData(data) {
-            // Add to charts
-            const timestamp = new Date(data.timestamp || Date.now());
+            // Fix timestamp conversion
+            let timestamp;
+            if (data.timestamp && data.timestamp > 1000000000) {
+                timestamp = new Date(data.timestamp * 1000);
+            } else {
+                timestamp = new Date(); // Use current time if invalid
+            }
             
-            if (data.messageType === 'voltage_reading') {
-                voltageData.push({
-                    x: timestamp,
-                    y: data.voltage
-                });
-                
-                // Keep only last 50 data points
-                if (voltageData.length > 50) {
-                    voltageData.shift();
-                }
-                
+            // Rest of the function remains the same
+            voltageData.push({
+                x: timestamp,
+                y: data.voltage
+            });
+            
+            if (voltageData.length > 50) voltageData.shift();
+            
+            if (voltageChart) {
                 voltageChart.update();
             }
             
-            // Add signal quality data
-            rssiData.push({
-                x: timestamp,
-                y: data.rssi
-            });
+            rssiData.push({ x: timestamp, y: data.rssi });
+            snrData.push({ x: timestamp, y: data.snr });
+            if (rssiData.length > 50) rssiData.shift();
+            if (snrData.length > 50) snrData.shift();
             
-            snrData.push({
-                x: timestamp,
-                y: data.snr
-            });
-            
-            // Keep only last 50 data points
-            if (rssiData.length > 50) {
-                rssiData.shift();
-            }
-            if (snrData.length > 50) {
-                snrData.shift();
+            if (signalChart) {
+                signalChart.update();
             }
             
-            signalChart.update();
-            
-            // Update table
             addToTable(data);
-            
-            // Update status
             updateLastUpdate();
             
-            // Add log entry
-            addLog(`Data from Node 0x${data.nodeId.toString(16).toUpperCase()}: ${data.messageType} - ${data.voltage}V`);
-
+            let nodeHex = data.nodeId ? `0x${data.nodeId.toString(16).toUpperCase()}` : "Unknown";
+            addLog(`${nodeHex}: ${data.messageType}, Voltage: ${data.voltage}V`);
         }
         
         function initCharts() {
-            // Voltage Chart
-            const voltageCtx = document.getElementById('voltageChart').getContext('2d');
-            voltageChart = new Chart(voltageCtx, {
-                type: 'line',
-                data: {
-                    datasets: [{
-                        label: 'Voltage (V)',
-                        data: voltageData,
-                        borderColor: '#667eea',
-                        backgroundColor: 'rgba(102, 126, 234, 0.1)',
-                        borderWidth: 3,
-                        fill: true,
-                        tension: 0.4
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    scales: {
-                        x: {
-                            type: 'time',
-                            time: {
-                                unit: 'minute'
-                            }
-                        },
-                        y: {
-                            beginAtZero: true,
-                            title: {
-                                display: true,
-                                text: 'Voltage (V)'
-                            }
+    try {
+        //addLog("🧪 Initializing charts...");
+
+        const voltageCtx = document.getElementById('voltageChart').getContext('2d');
+        voltageChart = new Chart(voltageCtx, {
+            type: 'line',
+            data: {
+                datasets: [{
+                    label: 'Voltage (V)',
+                    data: voltageData,
+                    borderColor: '#010827',
+                    backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        type: 'linear',
+                        title: {
+                            display: true,
+                            text: 'Time'
                         }
                     },
-                    plugins: {
-                        legend: {
-                            display: true
-                        }
+                    y: {
+                        title: {
+                            display: true,
+                            text: 'Voltage (V)'
+                        },
+                        beginAtZero: true
                     }
-                }
-            });
-            
-            // Signal Quality Chart
-            const signalCtx = document.getElementById('signalChart').getContext('2d');
-            signalChart = new Chart(signalCtx, {
-                type: 'line',
-                data: {
-                    datasets: [{
-                        label: 'RSSI (dBm)',
-                        data: rssiData,
-                        borderColor: '#ff6b6b',
-                        backgroundColor: 'rgba(255, 107, 107, 0.1)',
-                        borderWidth: 2,
-                        yAxisID: 'y'
-                    }, {
-                        label: 'SNR (dB)',
-                        data: snrData,
-                        borderColor: '#4ecdc4',
-                        backgroundColor: 'rgba(78, 205, 196, 0.1)',
-                        borderWidth: 2,
-                        yAxisID: 'y1'
-                    }]
                 },
-                options: {
-                    responsive: true,
-                    scales: {
-                        x: {
-                            type: 'time',
-                            time: {
-                                unit: 'minute'
-                            }
-                        },
-                        y: {
-                            type: 'linear',
-                            display: true,
-                            position: 'left',
-                            title: {
-                                display: true,
-                                text: 'RSSI (dBm)'
-                            }
-                        },
-                        y1: {
-                            type: 'linear',
-                            display: true,
-                            position: 'right',
-                            title: {
-                                display: true,
-                                text: 'SNR (dB)'
-                            },
-                            grid: {
-                                drawOnChartArea: false,
-                            }
-                        }
+                plugins: {
+                    legend: {
+                        display: true
                     }
                 }
-            });
-        }
+            }
+        });
+      
+
+        const signalCtx = document.getElementById('signalChart').getContext('2d');
+        signalChart = new Chart(signalCtx, {
+            type: 'line',
+            data: {
+                datasets: [{
+                    label: 'RSSI (dBm)',
+                    data: rssiData,
+                    borderColor: '#e74c3c',
+                    backgroundColor: 'rgba(231, 76, 60, 0.1)',
+                    borderWidth: 2,
+                    fill: false,
+                    tension: 0.4,
+                    yAxisID: 'y'
+                },
+                {
+                    label: 'SNR (dB)',
+                    data: snrData,
+                    borderColor: '#27ae60',
+                    backgroundColor: 'rgba(39, 174, 96, 0.1)',
+                    borderWidth: 2,
+                    fill: false,
+                    tension: 0.4,
+                    yAxisID: 'y1'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        type: 'linear',
+                        title: {
+                            display: true,
+                            text: 'Time'
+                        }
+                    },
+                    y: {
+                        type: 'linear',
+                        display: true,
+                        position: 'left',
+                        title: {
+                            display: true,
+                            text: 'RSSI (dBm)'
+                        }
+                    },
+                    y1: {
+                        type: 'linear',
+                        display: true,
+                        position: 'right',
+                        title: {
+                            display: true,
+                            text: 'SNR (dB)'
+                        },
+                        grid: {
+                            drawOnChartArea: false
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        display: true
+                    }
+                }
+            }
+        });
+        //addLog("✅ signalChart created");
+
+    } catch (err) {
+        addLog("❌ Chart initialization error: " + err.message);
+        console.error("❌ Chart init error:", err);
+    }
+}
+
         
         function addToTable(data) {
             const tbody = document.getElementById('data-tbody');
+            const endDeviceIds = [187, 204]; // Same as in server.js
+            
+            // Only show data from actual end devices
+            if (!endDeviceIds.includes(data.nodeId)) {
+                return; // Don't add gateway data to table
+            }
             
             // Remove "no data" message if it exists
             if (tbody.children.length === 1 && tbody.children[0].children.length === 1) {
@@ -497,13 +527,12 @@
             }
             
             const row = document.createElement('tr');
-            const timestamp = new Date(data.timestamp || Date.now());
+            const timestamp = new Date(data.timestamp * 1000);
             
             row.innerHTML = `
                 <td>${timestamp.toLocaleString()}</td>
-                <td>0x${data.nodeId.toString(16).toUpperCase()}</td>
+                <td>${getNodeDisplayName(data.nodeId)}</td>
                 <td>${data.voltage.toFixed(2)}</td>
-                <td>${data.messageType}</td>
                 <td>${data.rssi}</td>
                 <td>${data.snr.toFixed(2)}</td>
             `;
@@ -515,8 +544,34 @@
             while (tbody.children.length > 20) {
                 tbody.removeChild(tbody.lastChild);
             }
+            
+            // Check if we need to show "no end devices" message
+            //checkForNoEndDevices();
         }
         
+        // Update active nodes count more frequently
+        setInterval(() => {
+            updateActiveEndNodes();
+            updateActiveGateways();
+            // Also refresh recent data
+            loadRecentData();
+        }, 10000); // Every 10 seconds instead of 30
+
+        
+
+        // Add this new function
+        function loadRecentData() {
+            fetch('/api/sensor-data/latest?limit=5')
+                .then(response => response.json())
+                .then(data => {
+                    // Only update if we have new data
+                    if (data.length > 0) {
+                        const latestTimestamp = data[0].received_at;
+                        // You can add logic here to check if this is newer than what we have
+                    }
+                })
+                .catch(error => console.error('Error loading recent data:', error));
+        }
         function loadInitialData() {
             fetch('/api/sensor-data/latest?limit=20')
                 .then(response => response.json())
@@ -531,6 +586,39 @@
                 });
         }
         
+        function getFriendlyNodeName(nodeId) {
+            const mapping = {
+                0xBB: "Node 1 (Inverter 1)",
+                0xCC: "Node 2 (Transformer OLTC)",
+                // Add more as needed
+            };
+            return mapping[nodeId] || `0x${nodeId.toString(16).toUpperCase()}`;
+        }
+
+        function getNodeDisplayName(nodeId) {
+            const nodeMapping = {
+                187: "Node 1", // 0xBB
+                204: "Node 2"  // 0xCC
+                // Add more mappings as needed
+            };
+            return nodeMapping[nodeId] || `Node ${nodeId}`;
+        }
+
+        function checkForNoEndDevices() {
+            const tbody = document.getElementById('data-tbody');
+            addLog("No end devices connected");
+            // If no actual end device data, show message
+            if (tbody.children.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="5" style="text-align: center; color: #666; font-style: italic;">
+                            No LoRa end devices connected
+                        </td>
+                    </tr>
+                `;
+            }
+        }
+
         function sendCommand() {
             const nodeSelect = document.getElementById('node-select');
             const messageInput = document.getElementById('message-input');
@@ -599,10 +687,16 @@
             fetch('/api/active-nodes')
                 .then(response => response.json())
                 .then(data => {
-                    document.getElementById('active-end-nodes').textContent = data.activeNodeCount;
+                    const count = data.activeNodeCount;
+                    document.getElementById('active-end-nodes').textContent = count;
+                    
+                    // Update table if no active end devices
+                    if (count === 0) {
+                        checkForNoEndDevices();
+                    }
                 })
                 .catch(error => console.error('Error fetching active end nodes:', error));
-}
+        }
 
         function updateActiveGateways() {
             fetch('/api/gateways')
